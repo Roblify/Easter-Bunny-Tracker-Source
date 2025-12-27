@@ -1,1 +1,5 @@
+RewriteEngine on
 
+RewriteRule ^terms$ /tos.html [L]
+
+RewriteRule ^policy$ /privacy.html [L]
