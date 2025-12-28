@@ -15,13 +15,15 @@
     content="Track the Easter Bunny live as he delivers eggs and baskets around the world. See his latest location, speed, and more! The world's first 3D tracking for the Easter Bunny">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://www.easterbunnytracker.org/">
-  <meta property="og:image" content="https://github.com/Roblify/Easter-Bunny-Tracker-Source/blob/main/Bunny.png">
+  <meta property="og:image"
+    content="https://media.discordapp.net/attachments/1216576302673563698/1454749563025096834/Bunny.png?ex=6952389b&is=6950e71b&hm=931a744aae1ca2c84cb26298669c8143ad1ba93e5451cedd58d93dc3c27e1529&=&format=webp&quality=lossless&width=929&height=968">
 
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Easter Bunny Tracker">
   <meta name="twitter:description"
     content="Track the Easter Bunny live as he delivers eggs and baskets around the world. See his latest location, speed, and more! The world's first 3D tracking for the Easter Bunny">
-  <meta name="twitter:image" content="https://github.com/Roblify/Easter-Bunny-Tracker-Source/blob/main/Bunny.png">
+  <meta name="twitter:image"
+    content="https://media.discordapp.net/attachments/1216576302673563698/1454749563025096834/Bunny.png?ex=6952389b&is=6950e71b&hm=931a744aae1ca2c84cb26298669c8143ad1ba93e5451cedd58d93dc3c27e1529&=&format=webp&quality=lossless&width=929&height=968">
 
   <!-- Cesium widgets CSS from CDN -->
   <link href="https://unpkg.com/cesium/Build/Cesium/Widgets/widgets.css" rel="stylesheet" />
@@ -209,6 +211,30 @@
         </section>
       </div>
     </div>
+  </div>
+
+  <div id="cityPanel" class="city-panel" hidden>
+    <!-- Give the title an ID so JS can change it -->
+    <div id="cityTitle" class="city-panel-title">Current city info</div>
+
+    <div class="city-panel-row">
+      <span>Local time:</span>
+      <span id="cityLocalTime">—</span>
+    </div>
+    <div class="city-panel-row">
+      <span>Weather:</span>
+      <span id="cityWeather">—</span>
+    </div>
+    <div class="city-panel-row">
+      <span>Population:</span>
+      <span id="cityPopulation">—</span>
+    </div>
+    <div class="city-panel-row">
+      <span>Elevation:</span>
+      <span id="cityElevation">—</span>
+    </div>
+    <hr>
+    <footer>Note: The information listed here may not be fully accurate.</footer>
   </div>
 
   <button id="lockBtn" type="button" aria-pressed="true" title="Unlock camera">
