@@ -30,6 +30,8 @@
 
   <!-- your styles -->
   <link rel="stylesheet" href="style.css" />
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@600;700;800&display=swap" rel="stylesheet" />
 </head>
 
 <body>
@@ -38,14 +40,13 @@
   <!-- Top Stats Bar -->
   <div id="hud" aria-live="polite">
     <div class="hud-title">Easter Bunny Tracker</div>
-
     <div class="hud-row"><span>Last stop:</span><span id="statLast">—</span></div>
     <div class="hud-row"><span>Status:</span><span id="statStatus">Loading…</span></div>
     <div class="hud-row"><span>Arriving in:</span><span id="statEta">—</span></div>
+    <div class="hud-row"><span>Delivering for:</span><span id="statStopRemaining">—</span></div>
     <div class="hud-row"><span>Easter Bunny will arrive at your location in about</span><span
         id="statDuration">Loading...</span></div>
-    <div class="hud-row"><span>Delivering for:</span><span id="statStopRemaining">—</span></div>
-    <hr>
+<hr>
     <div class="hud-row"><span>Traveling speed:</span><span id="statSpeed">—</span></div>
     <div class="hud-row"><span>Eggs delivered:</span><span id="statEggs">—</span></div>
     <div class="hud-row"><span>Carrots eaten:</span><span id="statCarrots">—</span></div>
@@ -139,7 +140,7 @@
             </p>
 
             <p>
-              <a class="help-link" href="terms.html" target="_blank" rel="noopener">
+              <a class="help-link" href="tos.html" target="_blank" rel="noopener">
                 Open Terms of Service →
               </a>
             </p>
@@ -226,6 +227,10 @@
       <span id="cityWeather">—</span>
     </div>
     <div class="city-panel-row">
+      <span>Traveling direction:</span>
+      <span id="cityDirection">N/A</span>
+    </div>
+    <div class="city-panel-row">
       <span>Population:</span>
       <span id="cityPopulation">—</span>
     </div>
@@ -243,4 +248,3 @@
 </body>
 
 </html>
-
