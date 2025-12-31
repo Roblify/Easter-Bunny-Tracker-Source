@@ -1,43 +1,36 @@
-// main.js - Easter Bunny Tracker (stats + bunny marker + baskets + camera lock)
-const ION_TOKEN =
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIwMGJiMTA4My1lMTI0LTQ4NWUtOTIxZS1iZTZlOTRiMDFiMmMiLCJpZCI6MzcyMTA3LCJpYXQiOjE3NjY0NzkyODZ9.YQRxc-UcuvH4LttWYeNJhVdu_85WlysS3s_4bGIq95w";
+// main.js - Easter Bunny Tracker (stats + bunny marker + baskets + camera lock, Mapbox version)
+
+// =====================
+// CONFIG
+// =====================
+const MAPBOX_TOKEN = "pk.eyJ1IjoidGhlcm9ibGlmeSIsImEiOiJjbWp0bzMyM2w0em52M2NxMmZhcGc3NnI2In0.gFxRxRimP3V-WhDvZyf-UA"; // <-- put your Mapbox token here
 
 const BASKET_START_DR = 77;
-
 const CITY_PANEL_MIN_DR = 77;
 
-// Minimum zoom distance when UNLOCKED (meters)
-const MIN_ZOOM_DISTANCE_M = 120_000;
-
-// Camera distance when LOCKED (meters)
-const LOCKED_CAMERA_HEIGHT_M = 3350_000;
+// Camera settings (in Mapbox zoom levels)
+const LOCKED_ZOOM = 5;           // zoom when locked to bunny
+const UNLOCKED_MIN_ZOOM = 1.5;     // min zoom when unlocked
+const UNLOCKED_MAX_ZOOM = 8.0;     // max zoom when unlocked
 
 const STARTUP_GRACE_SEC = 20;
 
-async function createAerialWithLabelsImagery() {
-    if (typeof Cesium.createWorldImageryAsync === "function") {
-        return await Cesium.createWorldImageryAsync({
-            style: Cesium.IonWorldImageryStyle.AERIAL_WITH_LABELS
-        });
-    }
-    if (typeof Cesium.createWorldImagery === "function") {
-        return Cesium.createWorldImagery({
-            style: Cesium.IonWorldImageryStyle.AERIAL_WITH_LABELS
-        });
-    }
-    throw new Error("createWorldImagery helper not found on this Cesium build.");
-}
+const STANDARD_STYLE = "mapbox://styles/mapbox/standard";
+const SATELLITE_STYLE = "mapbox://styles/mapbox/satellite-streets-v12";
 
-async function createTerrainMaybe() {
-    try {
-        if (typeof Cesium.createWorldTerrainAsync === "function") return await Cesium.createWorldTerrainAsync();
-        if (typeof Cesium.createWorldTerrain === "function") return Cesium.createWorldTerrain();
-    } catch (e) {
-        console.warn("Terrain failed; continuing without terrain:", e);
-    }
-    return undefined;
-}
+let currentStyle = "standard"; // default
 
+// User settings
+let speedUnitMode = "mph";       // "mph" or "kmh"
+let streamerModeEnabled = false; // true = hide personal ETA text
+
+let isDelivering = false; // true only while the Bunny is stopped & delivering
+
+const MUSIC_VOLUME = 0.2;
+
+// =====================
+// GENERIC HELPERS
+// =====================
 function $(id) {
     return document.getElementById(id);
 }
@@ -81,6 +74,9 @@ function haversineKm(lat1, lon1, lat2, lon2) {
     return R * c;
 }
 
+// =====================
+// IP-BASED VIEWER LOCATION
+// =====================
 async function fetchViewerLocationFromIpInfo() {
     try {
         const res = await fetch("https://ipinfo.io/json?token=e79f246961b6e1", {
@@ -124,7 +120,9 @@ function findClosestStopByLocation(stops, lat, lon) {
     return best;
 }
 
-// Map Open-Meteo weather codes to plain-English descriptions
+// =====================
+// WEATHER
+// =====================
 function weatherCodeToText(code) {
     const c = Number(code);
     if (!Number.isFinite(c)) return "Unknown conditions";
@@ -146,50 +144,9 @@ function weatherCodeToText(code) {
     return "Unknown conditions";
 }
 
-async function fetchViewerLocationFromIpInfo() {
-    try {
-        const res = await fetch("https://ipinfo.io/json?token=e79f246961b6e1", {
-            cache: "no-store"
-        });
-        if (!res.ok) throw new Error(`ipinfo.io failed (${res.status})`);
-
-        const data = await res.json();
-        if (!data.loc || typeof data.loc !== "string") {
-            throw new Error("ipinfo.io response missing 'loc'");
-        }
-
-        const [latStr, lonStr] = data.loc.split(",");
-        const lat = parseFloat(latStr);
-        const lon = parseFloat(lonStr);
-
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-            throw new Error("ipinfo.io returned non-numeric coordinates");
-        }
-
-        return { lat, lon };
-    } catch (e) {
-        console.warn("Failed to get viewer location from ipinfo.io:", e);
-        return null;
-    }
-}
-
-function findClosestStopByLocation(stops, lat, lon) {
-    let best = null;
-    let bestDistKm = Infinity;
-
-    for (const s of stops) {
-        if (!Number.isFinite(s.Latitude) || !Number.isFinite(s.Longitude)) continue;
-        const d = haversineKm(lat, lon, s.Latitude, s.Longitude);
-        if (d < bestDistKm) {
-            bestDistKm = d;
-            best = s;
-        }
-    }
-
-    return best;
-}
-
-// For the "Easter Bunny will arrive at your location in ___" text
+// =====================
+// MISC HELPERS
+// =====================
 function formatViewerEtaText(deltaSeconds) {
     if (!Number.isFinite(deltaSeconds)) return "Unknown";
 
@@ -274,7 +231,7 @@ function toNum(x) {
 }
 
 async function loadRoute() {
-    const res = await fetch("./route.json", { cache: "no-store" }); // CHANGE THIS LATER
+    const res = await fetch("./route-testing.json", { cache: "no-store" }); // CHANGE THIS LATER
     if (!res.ok) throw new Error(`Failed to load route.json (${res.status})`);
     const data = await res.json();
 
@@ -303,54 +260,125 @@ async function loadRoute() {
     return stops;
 }
 
-const MUSIC_VOLUME = 0.2;
+function clamp01(x) {
+    return Math.max(0, Math.min(1, x));
+}
 
+function cityOnly(stop) {
+    return (stop && stop.City) ? stop.City : "Unknown";
+}
+
+// =====================
+// MAIN INIT (MAPBOX)
+// =====================
 (async function init() {
     try {
-        if (typeof Cesium === "undefined") {
-            console.error("Cesium is undefined.");
+        if (typeof mapboxgl === "undefined") {
+            console.error("Mapbox GL JS is undefined. Make sure its script is loaded.");
             return;
         }
 
-        // CHANGE LATER FOR TESTING PURPOSES
+        // CHANGE LATER IF YOU WANT PRE-START REDIRECT
         const PRE_JOURNEY_START_UTC_MS = Date.UTC(2026, 3, 5, 6, 0, 0);
         if (Date.now() < PRE_JOURNEY_START_UTC_MS) {
-            window.location.replace("index.html");
-            return;
+          window.location.replace("index.html");
+          return;
         }
 
-        Cesium.Ion.defaultAccessToken = ION_TOKEN;
+        // Show initial "Loading..." if element exists
+        const statDurationEl = $("statDuration");
+        if (statDurationEl) {
+            statDurationEl.textContent = "Loading...";
+        }
 
-        const imageryProvider = await createAerialWithLabelsImagery();
-        const terrainProvider = await createTerrainMaybe();
-
-        const viewer = new Cesium.Viewer("cesiumContainer", {
-            imageryProvider,
-            terrainProvider,
-            baseLayerPicker: false,
-            timeline: false,
-            animation: false,
-            geocoder: false,
-            homeButton: false,
-            sceneModePicker: false,
-            navigationHelpButton: false
-        });
-
-        viewer.scene.globe.depthTestAgainstTerrain = true;
-
-        // Force base layer
-        try {
-            const layers = viewer.scene.imageryLayers;
-            while (layers.length > 0) layers.remove(layers.get(0));
-            layers.addImageryProvider(imageryProvider);
-        } catch { }
-
-        // Minimum zoom when unlocked
-        viewer.scene.screenSpaceCameraController.minimumZoomDistance = MIN_ZOOM_DISTANCE_M;
-
-        // Load route
         $("statStatus").textContent = "Loading route…";
         const stops = await loadRoute();
+
+        // Mapbox basic setup
+        mapboxgl.accessToken = MAPBOX_TOKEN;
+
+        const firstStop = stops[0];
+
+        const map = new mapboxgl.Map({
+            container: "cesiumContainer",
+            // Mapbox Standard style (required for dawn/day/dusk/night presets)
+            style: "mapbox://styles/mapbox/standard",
+            center: [firstStop.Longitude, firstStop.Latitude],
+            zoom: LOCKED_ZOOM,  // something like 1–1.5 for full globe
+            bearing: 0,
+            pitch: 0,
+            projection: "globe"
+        });
+
+        map.on("style.load", () => {
+
+            // Globe projection must always be re-applied after style changes
+            map.setProjection("globe");
+
+            if (currentStyle === "standard") {
+                // Built-in dusk lighting
+                map.setConfigProperty("basemap", "lightPreset", "dusk");
+
+                // Starry dusk sky
+                map.setFog({
+                    range: [0.6, 8],
+                    color: "rgb(186, 210, 235)",
+                    "high-color": "rgb(36, 92, 223)",
+                    "horizon-blend": 0.02,
+                    "space-color": "rgb(11, 11, 25)",
+                    "star-intensity": 0.6
+                });
+            } else {
+                // Satellite: still apply globe fog, but no dusk preset
+                map.setFog({
+                    range: [0.8, 10],
+                    "space-color": "rgb(11, 11, 25)",
+                    "star-intensity": 0.3
+                });
+            }
+        });
+
+        // Wait for map load before adding markers or using setMinZoom/setMaxZoom
+        await new Promise((resolve) => map.on("load", resolve));
+
+        const mapStyleBtn = document.getElementById("mapStyleBtn");
+
+        function toggleMapStyle() {
+
+            // Save current camera
+            const center = map.getCenter();
+            const zoom = map.getZoom();
+            const bearing = map.getBearing();
+            const pitch = map.getPitch();
+
+            // Flip mode
+            const toSatellite = (currentStyle === "standard");
+
+            currentStyle = toSatellite ? "satellite" : "standard";
+
+            // Update button
+            if (mapStyleBtn) {
+                mapStyleBtn.setAttribute("aria-pressed", String(!toSatellite));
+                mapStyleBtn.textContent = toSatellite
+                    ? "Map style: Satellite"
+                    : "Map style: Standard";
+            }
+
+            // Apply style (will trigger style.load again)
+            map.setStyle(toSatellite ? SATELLITE_STYLE : STANDARD_STYLE);
+
+            // Restore camera as soon as the style finishes loading
+            map.once("style.load", () => {
+                map.jumpTo({ center, zoom, bearing, pitch });
+            });
+        }
+
+        if (mapStyleBtn) {
+            mapStyleBtn.addEventListener("click", toggleMapStyle);
+        }
+
+        map.setMinZoom(UNLOCKED_MIN_ZOOM);
+        map.setMaxZoom(UNLOCKED_MAX_ZOOM);
 
         // Final DR (journey end)
         const FINAL_DR = 1048;
@@ -448,12 +476,6 @@ const MUSIC_VOLUME = 0.2;
             return currentCityWeatherFetchPromise;
         }
 
-        // Show initial "Loading..." if element exists
-        const statDurationEl = $("statDuration");
-        if (statDurationEl) {
-            statDurationEl.textContent = "Loading...";
-        }
-
         // Kick off IP-based location lookup (non-blocking)
         fetchViewerLocationFromIpInfo().then((loc) => {
             if (!loc) {
@@ -490,93 +512,40 @@ const MUSIC_VOLUME = 0.2;
             statEtaLabelEl.textContent = isBefore77 ? "Countdown to takeoff:" : "Arriving in:";
         }
 
-        // Bunny (dead-center when locked)
-        const bunnyEntity = viewer.entities.add({
-            name: "Easter Bunny",
-            position: Cesium.Cartesian3.fromDegrees(stops[0].Longitude, stops[0].Latitude, 0),
-            billboard: {
-                image: "Bunny.png",
-                width: 37,
-                height: 37,
-                verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-            }
-        });
+        // =====================
+        // MAP MARKERS (BUNNY + BASKETS)
+        // =====================
+        let bunnyMarker = null;
+        const basketMarkers = new Map();
 
-        function followBunnyIfLocked() {
-            if (!isLocked) return;
+        function createBunnyMarker(initialStop) {
+            const img = document.createElement("img");
+            img.src = "Bunny.png";
+            img.alt = "Easter Bunny";
+            img.style.width = "37px";
+            img.style.height = "37px";
+            img.style.transform = "translateY(4px)"; // slight adjustment so it sits nice
+            img.style.pointerEvents = "none";
 
-            const jd = Cesium.JulianDate.now();
-            const p = bunnyEntity.position.getValue ? bunnyEntity.position.getValue(jd) : bunnyEntity.position;
-            if (!p) return;
-
-            const carto = Cesium.Cartographic.fromCartesian(p);
-            const lon = Cesium.Math.toDegrees(carto.longitude);
-            const lat = Cesium.Math.toDegrees(carto.latitude);
-
-            viewer.camera.setView({
-                destination: Cesium.Cartesian3.fromDegrees(lon, lat, LOCKED_CAMERA_HEIGHT_M),
-                orientation: {
-                    heading: 0,
-                    pitch: -Cesium.Math.PI_OVER_TWO,
-                    roll: 0
-                }
-            });
+            bunnyMarker = new mapboxgl.Marker({
+                element: img,
+                anchor: "bottom"
+            })
+                .setLngLat([initialStop.Longitude, initialStop.Latitude])
+                .addTo(map);
         }
 
-        // ✅ Delivery egg pop FX (shows only while delivering)
-        let isDelivering = false;
+        function updateBunnyPosition(lon, lat) {
+            if (!bunnyMarker) return;
+            bunnyMarker.setLngLat([lon, lat]);
+        }
 
-        const eggPopEntity = viewer.entities.add({
-            show: false,
-            position: new Cesium.CallbackProperty(() => {
-                // Keep it attached to bunny position
-                const jd = Cesium.JulianDate.now();
-                const p = bunnyEntity.position.getValue
-                    ? bunnyEntity.position.getValue(jd)
-                    : bunnyEntity.position;
-                return p || Cesium.Cartesian3.fromDegrees(stops[0].Longitude, stops[0].Latitude, 0);
-            }, false),
-            billboard: {
-                image: "Egg.png", // make sure Egg.png exists
-                width: 22,
-                height: 26,
-                verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-
-                // Fade + rise loop every 1s
-                color: new Cesium.CallbackProperty(() => {
-                    if (!isDelivering) return new Cesium.Color(1, 1, 1, 0);
-
-                    const phase = (performance.now() / 1000) % 1; // 0..1 each second
-                    const fadeIn = 0.15;
-                    const fadeOut = 0.20;
-
-                    let a = 1;
-                    if (phase < fadeIn) a = phase / fadeIn;
-                    else if (phase > 1 - fadeOut) a = (1 - phase) / fadeOut;
-
-                    return new Cesium.Color(1, 1, 1, Math.max(0, Math.min(1, a)));
-                }, false),
-
-                pixelOffset: new Cesium.CallbackProperty(() => {
-                    if (!isDelivering) return new Cesium.Cartesian2(0, 0);
-
-                    const phase = (performance.now() / 1000) % 1; // 0..1
-                    const risePx = phase * 28;      // how high it floats
-                    const baseAboveBunny = -44;     // start above bunny head (negative = up)
-                    return new Cesium.Cartesian2(0, baseAboveBunny - risePx);
-                }, false)
-            }
-        });
-
-        // Baskets
-        const basketEntities = new Map();
         function addBasketForStop(stop) {
             const dr = Number(stop.DR);
             if (Number.isFinite(dr) && dr < BASKET_START_DR) return;
 
             const key = stop.DR ?? `${stop.UnixArrival}`;
-            if (basketEntities.has(key)) return;
+            if (basketMarkers.has(key)) return;
 
             const cityName = cityLabel(stop);
 
@@ -590,30 +559,153 @@ const MUSIC_VOLUME = 0.2;
                     `More info: <a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${cityName}</a>`;
             }
 
-            const ent = viewer.entities.add({
-                // Title in the info box
-                name: cityName,
+            const img = document.createElement("img");
+            img.src = "Basket.png";
+            img.alt = cityName;
+            img.style.width = "24px";
+            img.style.height = "24px";
 
-                // Body content in the info box (clickable city text)
-                description: descHtml,
+            const marker = new mapboxgl.Marker({
+                element: img,
+                anchor: "bottom"
+            })
+                .setLngLat([stop.Longitude, stop.Latitude]);
 
-                position: Cesium.Cartesian3.fromDegrees(stop.Longitude, stop.Latitude, 0),
-                billboard: {
-                    image: "Basket.png",
-                    width: 24,
-                    height: 24,
-                    verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-                    heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            const popup = new mapboxgl.Popup({ offset: 24 }).setHTML(descHtml);
+            marker.setPopup(popup);
+
+            marker.addTo(map);
+            basketMarkers.set(key, marker);
+        }
+
+        createBunnyMarker(firstStop);
+
+        // =====================
+        // Egg pop FX (Egg.png above bunny while delivering)
+        // =====================
+        const eggImg = document.createElement("img");
+        eggImg.src = "Egg.png";
+        eggImg.alt = "";
+        eggImg.style.position = "absolute";
+        eggImg.style.width = "22px";
+        eggImg.style.height = "26px";
+        eggImg.style.pointerEvents = "none";
+        eggImg.style.opacity = "0";          // start invisible
+        eggImg.style.zIndex = "2";           // above map, below HUD (HUD is 9999)
+        eggImg.style.transform = "translate(-50%, -100%)"; // center horizontally, above point
+
+        document.body.appendChild(eggImg);
+
+        function updateEggFx(timestamp) {
+            if (!bunnyMarker) {
+                requestAnimationFrame(updateEggFx);
+                return;
+            }
+
+            // If not delivering, keep egg hidden
+            if (!isDelivering) {
+                eggImg.style.opacity = "0";
+                requestAnimationFrame(updateEggFx);
+                return;
+            }
+
+            // 0..1 phase repeating every second
+            const phase = (timestamp / 1000) % 1;
+            const fadeIn = 0.15;
+            const fadeOut = 0.20;
+
+            let a = 1;
+            if (phase < fadeIn) {
+                a = phase / fadeIn;                      // fade in
+            } else if (phase > 1 - fadeOut) {
+                a = (1 - phase) / fadeOut;              // fade out
+            }
+
+            // Base position = bunny screen position
+            const lngLat = bunnyMarker.getLngLat();
+            const pt = map.project(lngLat);
+
+            const risePx = phase * 28;                // how high it floats per cycle
+            const baseAboveBunny = 44;                // px above bunny "head"
+
+            eggImg.style.left = `${pt.x}px`;
+            eggImg.style.top = `${pt.y - baseAboveBunny - risePx}px`;
+            eggImg.style.opacity = `${Math.max(0, Math.min(1, a))}`;
+
+            requestAnimationFrame(updateEggFx);
+        }
+
+        // Start the animation loop
+        requestAnimationFrame(updateEggFx);
+
+        // =====================
+        // CAMERA LOCK STATE
+        // =====================
+        let isLocked = false;
+
+        function setLocked(nextLocked) {
+            isLocked = !!nextLocked;
+
+            const btn = $("lockBtn");
+            if (btn) {
+                btn.setAttribute("aria-pressed", String(isLocked));
+                btn.textContent = isLocked ? "🔓 Unlock Camera" : "🔒 Lock to Bunny";
+                btn.title = isLocked ? "Unlock camera" : "Lock camera to Bunny";
+            }
+
+            if (isLocked) {
+                // Disable user interaction
+                map.dragPan.disable();
+                map.scrollZoom.disable();
+                map.boxZoom.disable();
+                map.dragRotate.disable();
+                map.keyboard.disable();
+                map.doubleClickZoom.disable();
+                map.touchZoomRotate.disable();
+
+                // Center on bunny
+                if (bunnyMarker) {
+                    const ll = bunnyMarker.getLngLat();
+                    map.easeTo({
+                        center: ll,
+                        zoom: LOCKED_ZOOM,
+                        pitch: 0,
+                        bearing: 0,
+                        duration: 800
+                    });
                 }
+            } else {
+                // Enable interaction
+                map.dragPan.enable();
+                map.scrollZoom.enable();
+                map.boxZoom.enable();
+                map.dragRotate.enable();
+                map.keyboard.enable();
+                map.doubleClickZoom.enable();
+                map.touchZoomRotate.enable();
+
+                map.setMinZoom(UNLOCKED_MIN_ZOOM);
+                map.setMaxZoom(UNLOCKED_MAX_ZOOM);
+            }
+        }
+
+        function followBunnyIfLocked() {
+            if (!isLocked || !bunnyMarker) return;
+            const ll = bunnyMarker.getLngLat();
+            map.jumpTo({
+                center: ll,
+                zoom: LOCKED_ZOOM,
+                pitch: 0,
+                bearing: 0
             });
-
-            basketEntities.set(key, ent);
         }
 
-        function cityOnly(stop) {
-            return (stop && stop.City) ? stop.City : "Unknown";
-        }
+        // Start LOCKED by default
+        setLocked(true);
 
+        // =====================
+        // HUD + SETTINGS
+        // =====================
         function updateHUD({
             status,
             lastText,
@@ -639,14 +731,21 @@ const MUSIC_VOLUME = 0.2;
                 const mphRounded = Math.round(speedMph);
 
                 const kmStr = Math.abs(kmRounded) >= 1000
-                    ? formatInt(kmRounded)          // e.g. 1,234 km/h
-                    : kmRounded.toString();         // e.g. 987 km/h
+                    ? formatInt(kmRounded)
+                    : kmRounded.toString();
 
                 const mphStr = Math.abs(mphRounded) >= 1000
                     ? formatInt(mphRounded)
                     : mphRounded.toString();
 
-                $("statSpeed").textContent = `${kmStr} km/h • ${mphStr} mph`;
+                let speedText;
+                if (speedUnitMode === "kmh") {
+                    speedText = `${kmStr} km/h`;
+                } else {
+                    speedText = `${mphStr} mph`;
+                }
+
+                $("statSpeed").textContent = speedText;
             } else {
                 $("statSpeed").textContent = "—";
             }
@@ -665,8 +764,6 @@ const MUSIC_VOLUME = 0.2;
             }
 
             if (now < first.UnixArrivalArrival) return { mode: "pre" };
-            // NOTE: we NO LONGER return "done" here; we keep treating it as travel/stop
-            // if (now >= last.UnixArrivalDeparture) return { mode: "done" };
 
             for (let i = 0; i < stops.length; i++) {
                 const s = stops[i];
@@ -678,271 +775,6 @@ const MUSIC_VOLUME = 0.2;
             return { mode: "travel", from: stops.length - 2, to: stops.length - 1 };
         }
 
-        function clamp01(x) {
-            return Math.max(0, Math.min(1, x));
-        }
-
-        // Camera lock state
-        let isLocked = false;
-
-        function setLocked(nextLocked) {
-            isLocked = !!nextLocked;
-
-            const btn = $("lockBtn");
-            if (btn) {
-                btn.setAttribute("aria-pressed", String(isLocked));
-                btn.textContent = isLocked ? "🔓 Unlock Camera" : "🔒 Lock to Bunny";
-                btn.title = isLocked ? "Unlock camera" : "Lock camera to Bunny";
-            }
-
-            const ssc = viewer.scene.screenSpaceCameraController;
-
-            if (isLocked) {
-                viewer.trackedEntity = bunnyEntity;
-
-                ssc.enableRotate = false;
-                ssc.enableTranslate = false;
-                ssc.enableZoom = false;
-                ssc.enableTilt = false;
-                ssc.enableLook = false;
-                ssc.enableInputs = false;
-
-                const range = LOCKED_CAMERA_HEIGHT_M;
-                viewer.zoomTo(
-                    bunnyEntity,
-                    new Cesium.HeadingPitchRange(
-                        0,
-                        -Cesium.Math.PI_OVER_TWO,
-                        range
-                    )
-                );
-            } else {
-                viewer.trackedEntity = undefined;
-
-                ssc.enableRotate = true;
-                ssc.enableTranslate = true;
-                ssc.enableZoom = true;
-                ssc.enableTilt = true;
-                ssc.enableLook = true;
-                ssc.enableInputs = true;
-
-                ssc.minimumZoomDistance = MIN_ZOOM_DISTANCE_M;
-            }
-        }
-
-        // -------------------------
-        // HELP modal UI
-        // -------------------------
-        const helpBtn = $("helpBtn");
-        const helpOverlay = $("helpOverlay");
-        const helpCloseBtn = $("helpCloseBtn");
-
-        function openHelp() {
-            if (!helpOverlay) return;
-            helpOverlay.classList.add("is-open");
-            helpOverlay.setAttribute("aria-hidden", "false");
-
-            const activeTab = helpOverlay.querySelector(".help-tab.is-active");
-            if (activeTab) activeTab.focus();
-        }
-
-        function closeHelp() {
-            if (!helpOverlay) return;
-            helpOverlay.classList.remove("is-open");
-            helpOverlay.setAttribute("aria-hidden", "true");
-            if (helpBtn) helpBtn.focus();
-        }
-
-        function setHelpTab(tabKey) {
-            if (!helpOverlay) return;
-
-            const tabs = helpOverlay.querySelectorAll(".help-tab");
-            const panes = helpOverlay.querySelectorAll(".help-pane");
-
-            tabs.forEach((t) => t.classList.toggle("is-active", t.dataset.tab === tabKey));
-            panes.forEach((p) => p.classList.toggle("is-active", p.dataset.pane === tabKey));
-        }
-
-        if (helpBtn) helpBtn.addEventListener("click", openHelp);
-        if (helpCloseBtn) helpCloseBtn.addEventListener("click", closeHelp);
-
-        const helpTabs = helpOverlay ? helpOverlay.querySelector(".help-tabs") : null;
-        if (helpTabs) {
-            helpTabs.addEventListener("click", (e) => {
-                const btn = e.target.closest(".help-tab");
-                if (!btn) return;
-                e.preventDefault();
-                setHelpTab(btn.dataset.tab);
-            });
-        }
-
-        window.addEventListener("keydown", (e) => {
-            if (e.key !== "Escape") return;
-            if (!helpOverlay) return;
-            if (!helpOverlay.classList.contains("is-open")) return;
-            closeHelp();
-        });
-
-        // -------------------------
-        // Background music (music.mp3)
-        // -------------------------
-        let musicEnabled = true;
-        let bgAudio = null;
-        let musicResumePending = false;
-
-        function initBgMusic() {
-            if (bgAudio) return;
-
-            bgAudio = new Audio("music.mp3");
-            // We'll handle the looping manually so we can insert a 1s delay
-            bgAudio.loop = false;
-            bgAudio.volume = MUSIC_VOLUME; // assuming you added this constant
-
-            bgAudio.addEventListener("ended", () => {
-                if (!musicEnabled) return;
-                setTimeout(() => {
-                    if (!musicEnabled || !bgAudio) return;
-                    try {
-                        bgAudio.currentTime = 0;
-                        const p = bgAudio.play();
-                        if (p && typeof p.then === "function") {
-                            p.then(() => {
-                                musicResumePending = false;
-                            }).catch(() => {
-                                // If this fails, keep pending true
-                                musicResumePending = true;
-                            });
-                        }
-                    } catch (e) {
-                        console.warn("Background music replay failed:", e);
-                        musicResumePending = true;
-                    }
-                }, 1000); // 1 second delay between loops
-            });
-
-            // Try to autoplay; if blocked, mark as pending
-            try {
-                const p = bgAudio.play();
-                if (p && typeof p.then === "function") {
-                    p.then(() => {
-                        musicResumePending = false;
-                    }).catch((err) => {
-                        console.warn("Autoplay for background music was blocked by the browser:", err);
-                        musicResumePending = true;
-                    });
-                }
-            } catch (e) {
-                console.warn("Background music initial play failed:", e);
-                musicResumePending = true;
-            }
-        }
-
-        function setMusicEnabled(next) {
-            musicEnabled = !!next;
-
-            const btn = $("musicToggleBtn");
-            if (btn) {
-                btn.setAttribute("aria-pressed", String(musicEnabled));
-                btn.textContent = musicEnabled ? "Music: On" : "Music: Off";
-            }
-
-            if (!bgAudio) {
-                if (musicEnabled) {
-                    initBgMusic();
-                }
-                return;
-            }
-
-            if (musicEnabled) {
-                try {
-                    const p = bgAudio.play();
-                    if (p && typeof p.then === "function") {
-                        p.then(() => {
-                            musicResumePending = false;
-                        }).catch(() => {
-                            musicResumePending = true;
-                        });
-                    }
-                } catch (e) {
-                    console.warn("Background music play failed:", e);
-                    musicResumePending = true;
-                }
-            } else {
-                bgAudio.pause();
-                musicResumePending = false;
-            }
-        }
-
-        // Button hookup
-        const lockBtn = $("lockBtn");
-        if (lockBtn) {
-            lockBtn.addEventListener("click", () => setLocked(!isLocked));
-        }
-
-        function handleUserInteractionForMusic() {
-            if (!musicEnabled || !bgAudio || !musicResumePending) return;
-
-            // We now have a user gesture, so try to start the music
-            musicResumePending = false;
-            try {
-                const p = bgAudio.play();
-                if (p && typeof p.then === "function") {
-                    p.catch(() => {
-                        // If it somehow still fails, don't loop on it
-                    });
-                }
-            } catch (e) {
-                console.warn("Background music resume on interaction failed:", e);
-            }
-        }
-
-        // Any of these count as "user interaction" for autoplay rules
-        ["pointerdown", "click", "keydown", "touchstart"].forEach((ev) => {
-            window.addEventListener(ev, handleUserInteractionForMusic, { passive: true });
-        });
-
-        // Settings: music toggle button
-        const musicToggleBtn = $("musicToggleBtn");
-        if (musicToggleBtn) {
-            musicToggleBtn.addEventListener("click", () => {
-                setMusicEnabled(!musicEnabled);
-                if (musicEnabled && !bgAudio) {
-                    initBgMusic();
-                }
-            });
-        }
-
-        // Start with music ON by default
-        setMusicEnabled(true);
-        initBgMusic();
-
-        // Prevent any camera pitch/tilt changes while locked
-        let suppressCameraClamp = false;
-
-        viewer.camera.changed.addEventListener(() => {
-            if (!isLocked) return;
-            if (suppressCameraClamp) return;
-
-            suppressCameraClamp = true;
-            try {
-                const range = LOCKED_CAMERA_HEIGHT_M;
-                viewer.zoomTo(
-                    bunnyEntity,
-                    new Cesium.HeadingPitchRange(
-                        0,
-                        -Cesium.Math.PI_OVER_TWO,
-                        range
-                    )
-                );
-            } finally {
-                setTimeout(() => { suppressCameraClamp = false; }, 0);
-            }
-        });
-
-        // Start LOCKED by default
-        setLocked(true);
-
-        // Before DR 77 = hide regions in "Next" and force "Last" to N/A
         function isBeforeDR77ForSegment(seg, stops) {
             if (seg.mode === "pre") return true;
 
@@ -975,6 +807,11 @@ const MUSIC_VOLUME = 0.2;
             const el = $("statDuration");
             if (!el) return;
 
+            if (streamerModeEnabled) {
+                el.textContent = "HIDDEN | S.M. enabled";
+                return;
+            }
+
             // If we failed earlier
             if (viewerEtaError) {
                 if (!el.textContent || el.textContent === "Loading...") {
@@ -998,14 +835,9 @@ const MUSIC_VOLUME = 0.2;
             const deltaSeconds = arrival - now;
             const text = formatViewerEtaText(deltaSeconds);
 
-            // IMPORTANT:
-            // The HTML has:
-            //   "Easter Bunny will arrive at your location in" <span id="statDuration">...</span>
-            // So we only set the trailing part, e.g. "1 hour", "2½ hours", or "anytime".
             el.textContent = text;
         }
 
-        // Compute traveling direction (compass + arrow) given the current segment
         function computeTravelDirection(fromStop, toStop) {
             if (!fromStop || !toStop) return null;
 
@@ -1068,7 +900,7 @@ const MUSIC_VOLUME = 0.2;
         function updateCityPanel(now, seg) {
             if (!cityPanel) return;
 
-            // Hide if journey complete; tick() also hides, but this is a guard
+            // Hide if journey complete
             if (Number.isFinite(FINAL_ARRIVAL) && now >= FINAL_ARRIVAL) {
                 cityPanel.hidden = true;
                 currentCityStop = null;
@@ -1101,17 +933,13 @@ const MUSIC_VOLUME = 0.2;
                 return;
             }
 
-            // --- rest of your function stays the same ---
             cityPanel.hidden = false;
             currentCityStop = s;
 
-            // Title: "Information about City, Region"
+            // Title: "Information about City"
             if (cityTitleEl) {
                 const city = s.City || "Unknown city";
-                const region = s.Region || "";
-                cityTitleEl.textContent = region
-                    ? `Information about ${city}, ${region}`
-                    : `Information about ${city}`;
+                cityTitleEl.textContent = `Information about: ${city}`;
             }
 
             if (cityPopulationEl) {
@@ -1128,19 +956,19 @@ const MUSIC_VOLUME = 0.2;
                 }
             }
 
-            if (cityDirectionEl) {
-                if (currentTravelDirection) {
-                    cityDirectionEl.textContent =
-                        `${currentTravelDirection.text} ${currentTravelDirection.arrow}`;
+            if (cityElevationEl) {
+                const elev = Number(s.ElevationMeter);
+                if (Number.isFinite(elev)) {
+                    cityElevationEl.textContent = `${formatInt(elev)} meters`;
                 } else {
-                    cityDirectionEl.textContent = "N/A";
+                    cityElevationEl.textContent = "Unknown";
                 }
             }
 
             if (cityDirectionEl) {
-                const dirInfo = computeTravelDirection(seg, stops);
-                if (dirInfo) {
-                    cityDirectionEl.textContent = `${dirInfo.text} ${dirInfo.arrow}`;
+                if (currentTravelDirection) {
+                    cityDirectionEl.textContent =
+                        `${currentTravelDirection.arrow} | ${currentTravelDirection.text}`;
                 } else {
                     cityDirectionEl.textContent = "N/A";
                 }
@@ -1205,19 +1033,246 @@ const MUSIC_VOLUME = 0.2;
             }
         }
 
+        // =====================
+        // HELP MODAL
+        // =====================
+        const helpBtn = $("helpBtn");
+        const helpOverlay = $("helpOverlay");
+        const helpCloseBtn = $("helpCloseBtn");
+
+        function openHelp() {
+            if (!helpOverlay) return;
+            helpOverlay.classList.add("is-open");
+            helpOverlay.setAttribute("aria-hidden", "false");
+
+            const activeTab = helpOverlay.querySelector(".help-tab.is-active");
+            if (activeTab) activeTab.focus();
+        }
+
+        function closeHelp() {
+            if (!helpOverlay) return;
+            helpOverlay.classList.remove("is-open");
+            helpOverlay.setAttribute("aria-hidden", "true");
+            if (helpBtn) helpBtn.focus();
+        }
+
+        function setHelpTab(tabKey) {
+            if (!helpOverlay) return;
+
+            const tabs = helpOverlay.querySelectorAll(".help-tab");
+            const panes = helpOverlay.querySelectorAll(".help-pane");
+
+            tabs.forEach((t) => t.classList.toggle("is-active", t.dataset.tab === tabKey));
+            panes.forEach((p) => p.classList.toggle("is-active", p.dataset.pane === tabKey));
+        }
+
+        if (helpBtn) helpBtn.addEventListener("click", openHelp);
+        if (helpCloseBtn) helpCloseBtn.addEventListener("click", closeHelp);
+
+        const helpTabs = helpOverlay ? helpOverlay.querySelector(".help-tabs") : null;
+        if (helpTabs) {
+            helpTabs.addEventListener("click", (e) => {
+                const btn = e.target.closest(".help-tab");
+                if (!btn) return;
+                e.preventDefault();
+                setHelpTab(btn.dataset.tab);
+            });
+        }
+
+        window.addEventListener("keydown", (e) => {
+            if (e.key !== "Escape") return;
+            if (!helpOverlay) return;
+            if (!helpOverlay.classList.contains("is-open")) return;
+            closeHelp();
+        });
+
+        // =====================
+        // BACKGROUND MUSIC
+        // =====================
+        let musicEnabled = true;
+        let bgAudio = null;
+        let musicResumePending = false;
+
+        function initBgMusic() {
+            if (bgAudio) return;
+
+            bgAudio = new Audio("music.mp3");
+            bgAudio.loop = false;
+            bgAudio.volume = MUSIC_VOLUME;
+
+            bgAudio.addEventListener("ended", () => {
+                if (!musicEnabled) return;
+                setTimeout(() => {
+                    if (!musicEnabled || !bgAudio) return;
+                    try {
+                        bgAudio.currentTime = 0;
+                        const p = bgAudio.play();
+                        if (p && typeof p.then === "function") {
+                            p.then(() => {
+                                musicResumePending = false;
+                            }).catch(() => {
+                                musicResumePending = true;
+                            });
+                        }
+                    } catch (e) {
+                        console.warn("Background music replay failed:", e);
+                        musicResumePending = true;
+                    }
+                }, 1000);
+            });
+
+            try {
+                const p = bgAudio.play();
+                if (p && typeof p.then === "function") {
+                    p.then(() => {
+                        musicResumePending = false;
+                    }).catch((err) => {
+                        console.warn("Autoplay for background music was blocked by the browser:", err);
+                        musicResumePending = true;
+                    });
+                }
+            } catch (e) {
+                console.warn("Background music initial play failed:", e);
+                musicResumePending = true;
+            }
+        }
+
+        function setMusicEnabled(next) {
+            musicEnabled = !!next;
+
+            const btn = $("musicToggleBtn");
+            if (btn) {
+                btn.setAttribute("aria-pressed", String(musicEnabled));
+                btn.textContent = musicEnabled ? "Music: On" : "Music: Off";
+            }
+
+            if (!bgAudio) {
+                if (musicEnabled) {
+                    initBgMusic();
+                }
+                return;
+            }
+
+            if (musicEnabled) {
+                try {
+                    const p = bgAudio.play();
+                    if (p && typeof p.then === "function") {
+                        p.then(() => {
+                            musicResumePending = false;
+                        }).catch(() => {
+                            musicResumePending = true;
+                        });
+                    }
+                } catch (e) {
+                    console.warn("Background music play failed:", e);
+                    musicResumePending = true;
+                }
+            } else {
+                bgAudio.pause();
+                musicResumePending = false;
+            }
+        }
+
+        function handleUserInteractionForMusic() {
+            if (!musicEnabled || !bgAudio || !musicResumePending) return;
+
+            musicResumePending = false;
+            try {
+                const p = bgAudio.play();
+                if (p && typeof p.then === "function") {
+                    p.catch(() => {
+                        // ignore
+                    });
+                }
+            } catch (e) {
+                console.warn("Background music resume on interaction failed:", e);
+            }
+        }
+
+        ["pointerdown", "click", "keydown", "touchstart"].forEach((ev) => {
+            window.addEventListener(ev, handleUserInteractionForMusic, { passive: true });
+        });
+
+        const musicToggleBtn = $("musicToggleBtn");
+        if (musicToggleBtn) {
+            musicToggleBtn.addEventListener("click", () => {
+                setMusicEnabled(!musicEnabled);
+                if (musicEnabled && !bgAudio) {
+                    initBgMusic();
+                }
+            });
+        }
+
+        // Start with music ON by default
+        setMusicEnabled(true);
+        initBgMusic();
+
+        // =====================
+        // SETTINGS BUTTONS
+        // =====================
+        function updateSpeedUnitButton() {
+            const btn = $("travelSpeedTypeBtn");
+            if (!btn) return;
+
+            const isMph = (speedUnitMode === "mph");
+
+            btn.setAttribute("aria-pressed", String(isMph));
+            btn.textContent = isMph
+                ? "Distance converted in: MPH"
+                : "Distance converted in: KM/H";
+        }
+
+        const travelSpeedTypeBtn = $("travelSpeedTypeBtn");
+        if (travelSpeedTypeBtn) {
+            travelSpeedTypeBtn.addEventListener("click", () => {
+                speedUnitMode = (speedUnitMode === "mph") ? "kmh" : "mph";
+                updateSpeedUnitButton();
+            });
+        }
+        updateSpeedUnitButton();
+
+        function updateStreamerModeButton() {
+            const btn = $("streamerModeBtn");
+            if (!btn) return;
+
+            btn.setAttribute("aria-pressed", String(streamerModeEnabled));
+            btn.textContent = streamerModeEnabled
+                ? "Streamer Mode: Enabled"
+                : "Streamer Mode: Disabled";
+        }
+
+        const streamerModeBtn = $("streamerModeBtn");
+        if (streamerModeBtn) {
+            streamerModeBtn.addEventListener("click", () => {
+                streamerModeEnabled = !streamerModeEnabled;
+                updateStreamerModeButton();
+
+                updateViewerLocationEta(Date.now() / 1000);
+            });
+        }
+        updateStreamerModeButton();
+
+        const lockBtn = $("lockBtn");
+        if (lockBtn) {
+            lockBtn.addEventListener("click", () => setLocked(!isLocked));
+        }
+
+        // =====================
+        // TICK LOOP
+        // =====================
         function tick() {
             const now = Date.now() / 1000; // keep fractional seconds
 
-            // Figure out what segment we're in (pre / stop / travel)
+            isDelivering = false;
+
             const seg = findSegment(now);
 
-            // ✅ Always add baskets for completed stops, even after DR 1048
+            // Always add baskets for completed stops, even after DR 1048
             for (const s of stops) {
                 if (now >= s.UnixArrivalDeparture) addBasketForStop(s);
                 else break;
             }
 
-            // 🏁 After DR 1048 has arrived: hide Status + Arriving, freeze eggs/carrots
             const journeyComplete =
                 Number.isFinite(FINAL_ARRIVAL) && now >= FINAL_ARRIVAL;
 
@@ -1225,15 +1280,7 @@ const MUSIC_VOLUME = 0.2;
                 if (cityPanel) cityPanel.hidden = true;
 
                 // Park bunny at the final stop
-                bunnyEntity.position = Cesium.Cartesian3.fromDegrees(
-                    finalStop.Longitude,
-                    finalStop.Latitude,
-                    0
-                );
-
-                // No more delivering FX
-                isDelivering = false;
-                eggPopEntity.show = false;
+                updateBunnyPosition(finalStop.Longitude, finalStop.Latitude);
 
                 // Hide Status and Arriving in rows
                 if (statStatusRow) statStatusRow.style.display = "none";
@@ -1241,10 +1288,10 @@ const MUSIC_VOLUME = 0.2;
 
                 // Freeze eggs/carrots at final values
                 updateHUD({
-                    status: "",                        // row is hidden anyway
-                    lastText: cityLabel(finalStop),    // "Last stop" = final city
+                    status: "",
+                    lastText: cityLabel(finalStop),
                     etaSeconds: NaN,
-                    etaText: "",                       // row hidden
+                    etaText: "",
                     stopRemainingSeconds: NaN,
                     speedKmh: NaN,
                     speedMph: NaN,
@@ -1253,21 +1300,9 @@ const MUSIC_VOLUME = 0.2;
                 });
 
                 followBunnyIfLocked();
-
-                // While unlocked, re-assert minimum zoom (safe guard)
-                if (!isLocked) {
-                    viewer.scene.screenSpaceCameraController.minimumZoomDistance = MIN_ZOOM_DISTANCE_M;
-                }
-
                 updateViewerLocationEta(now);
-                // city panel already hidden above
                 return;
             }
-
-            // 🔽 Normal behavior before final arrival
-
-            isDelivering = (seg.mode === "stop");
-            eggPopEntity.show = isDelivering;
 
             const beforeDR77 = Number.isFinite(DR77_ARRIVAL) && now < DR77_ARRIVAL;
             setEtaLabel(beforeDR77);
@@ -1276,7 +1311,7 @@ const MUSIC_VOLUME = 0.2;
 
             if (seg.mode === "pre") {
                 const first = stops[0];
-                bunnyEntity.position = Cesium.Cartesian3.fromDegrees(first.Longitude, first.Latitude, 0);
+                updateBunnyPosition(first.Longitude, first.Latitude);
 
                 updateHUD({
                     status: "Preparing for takeoff…",
@@ -1291,10 +1326,7 @@ const MUSIC_VOLUME = 0.2;
                 });
 
                 followBunnyIfLocked();
-
                 currentTravelDirection = null;
-
-                // Still update viewer ETA + city panel in pre-mode
                 updateViewerLocationEta(now);
                 updateCityPanel(now, seg);
                 return;
@@ -1303,19 +1335,37 @@ const MUSIC_VOLUME = 0.2;
             if (seg.mode === "stop") {
                 const s = stops[seg.i];
                 const next = stops[Math.min(seg.i + 1, stops.length - 1)];
-                bunnyEntity.position = Cesium.Cartesian3.fromDegrees(s.Longitude, s.Latitude, 0);
+
+                isDelivering = true;
+                updateBunnyPosition(s.Longitude, s.Latitude);
 
                 const stopRemaining = s.UnixArrivalDeparture - now;
 
                 let speedKmh = NaN;
                 let speedMph = NaN;
+                let prevEggsTotal = 0;
+                let prevCarrotsTotal = 0;
+
                 if (seg.i > 0) {
                     const prev = stops[seg.i - 1];
+
                     const distKm = haversineKm(prev.Latitude, prev.Longitude, s.Latitude, s.Longitude);
                     const travelSec = Math.max(1, s.UnixArrivalArrival - prev.UnixArrivalDeparture);
                     speedKmh = (distKm / travelSec) * 3600;
                     speedMph = speedKmh * 0.621371;
+
+                    prevEggsTotal = Number(prev.EggsDelivered) || 0;
+                    prevCarrotsTotal = Number(prev.CarrotsEaten) || 0;
                 }
+
+                const cityEggsTotal = Number(s.EggsDelivered) || prevEggsTotal;
+                const cityCarrotsTotal = Number(s.CarrotsEaten) || prevCarrotsTotal;
+
+                const stopDuration = Math.max(1, s.UnixArrivalDeparture - s.UnixArrivalArrival);
+                const stopT = clamp01((now - s.UnixArrivalArrival) / stopDuration);
+
+                const eggsNow = lerp(prevEggsTotal, cityEggsTotal, stopT);
+                const carrotsNow = lerp(prevCarrotsTotal, cityCarrotsTotal, stopT);
 
                 updateHUD({
                     status: `Delivering in ${s.City}`,
@@ -1326,12 +1376,11 @@ const MUSIC_VOLUME = 0.2;
                     stopRemainingSeconds: stopRemaining,
                     speedKmh,
                     speedMph,
-                    eggs: s.EggsDelivered,
-                    carrots: s.CarrotsEaten
+                    eggs: eggsNow,
+                    carrots: carrotsNow
                 });
 
                 followBunnyIfLocked();
-
                 currentTravelDirection = null;
             } else if (seg.mode === "travel") {
                 const from = stops[seg.from];
@@ -1340,13 +1389,11 @@ const MUSIC_VOLUME = 0.2;
 
                 const toDr = Number(to.DR);
 
-                // Show region only starting at DR 76+
                 const showRegionInStatus = Number.isFinite(toDr) && toDr >= 76;
                 const destinationLabelForStatus = showRegionInStatus
-                    ? cityLabel(to)   // "City, Region"
-                    : cityOnly(to);   // "City"
+                    ? cityLabel(to)
+                    : cityOnly(to);
 
-                // Add "Heading to:" only starting at DR 76+
                 const showHeadingPrefix = Number.isFinite(toDr) && toDr >= 76;
                 const statusText = showHeadingPrefix
                     ? `Heading to: ${destinationLabelForStatus}`
@@ -1358,7 +1405,7 @@ const MUSIC_VOLUME = 0.2;
                 const t = clamp01((now - departT) / denom);
 
                 const pos = interpolateLatLon(from, to, t);
-                bunnyEntity.position = Cesium.Cartesian3.fromDegrees(pos.lon, pos.lat, 0);
+                updateBunnyPosition(pos.lon, pos.lat);
 
                 const distKm = haversineKm(from.Latitude, from.Longitude, to.Latitude, to.Longitude);
                 const speedKmh = (distKm / denom) * 3600;
@@ -1380,28 +1427,20 @@ const MUSIC_VOLUME = 0.2;
                 });
 
                 followBunnyIfLocked();
-
                 currentTravelDirection = computeTravelDirection(from, to);
             }
 
-            // While unlocked, re-assert minimum zoom (safe guard)
-            if (!isLocked) {
-                viewer.scene.screenSpaceCameraController.minimumZoomDistance = MIN_ZOOM_DISTANCE_M;
-            }
-
             updateViewerLocationEta(now);
-            updateCityPanel(now, seg);  // 👈 this runs every tick in normal flow
+            updateCityPanel(now, seg);
         }
 
         tick();
         setInterval(tick, 250);
 
-        viewer.scene.requestRenderMode = false;
-        console.log(`Loaded route with ${stops.length} stops.`);
+        console.log(`Loaded route with ${stops.length} stops (Mapbox globe).`);
     } catch (e) {
         console.error("Tracker init failed:", e);
         const el = document.getElementById("statStatus");
         if (el) el.textContent = "Error (see console)";
     }
 })();
-
