@@ -274,7 +274,7 @@ function toNum(x) {
 }
 
 async function loadRoute() {
-    const res = await fetch("./route.json", { cache: "no-store" }); // CHANGE THIS LATER
+    const res = await fetch("./route-testing.json", { cache: "no-store" }); // CHANGE THIS LATER
     if (!res.ok) throw new Error(`Failed to load route.json (${res.status})`);
     const data = await res.json();
 
@@ -322,11 +322,13 @@ function cityOnly(stop) {
         }
 
         // CHANGE LATER IF YOU WANT PRE-START REDIRECT
+        /*
         const PRE_JOURNEY_START_UTC_MS = Date.UTC(2026, 3, 5, 6, 0, 0);
         if (Date.now() < PRE_JOURNEY_START_UTC_MS) {
             window.location.replace("index.html");
             return;
         }
+        */
 
         // Show initial "Loading..." if element exists
         const statDurationEl = $("statDuration");
@@ -587,8 +589,8 @@ function cityOnly(stop) {
         }
 
         // =====================
-// MAP MARKERS (BUNNY + BASKETS)
-// =====================
+        // MAP MARKERS (BUNNY + BASKETS)
+        // =====================
         let bunnyMarker = null;
         const basketMarkers = new Map();
 
@@ -741,7 +743,7 @@ function cityOnly(stop) {
 
         // =====================
         // CAMERA LOCK STATE (not persisted; always defaults to locked)
-// =====================
+        // =====================
         let isLocked = true;
 
         function setLocked(nextLocked) {
@@ -1222,6 +1224,13 @@ function cityOnly(stop) {
                     }
                 }, 1000);
             });
+
+            // ⬇⬇ IMPORTANT: don't autoplay if user has music off
+            if (!musicEnabled) {
+                // Just keep the audio object ready; no play() call.
+                musicResumePending = false;
+                return;
+            }
 
             try {
                 const p = bgAudio.play();
