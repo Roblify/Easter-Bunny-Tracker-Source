@@ -9,6 +9,8 @@ const WEATHERAPI_KEY = "c8b1cc710316460e83f54057260101";
 const BASKET_START_DR = 77;
 const CITY_PANEL_MIN_DR = 77;
 
+const ROUTE_FILE = "route.json"
+
 const TAKEOFF_DR = 76;
 
 // Camera settings (in Mapbox zoom levels)
@@ -274,7 +276,7 @@ function toNum(x) {
 }
 
 async function loadRoute() {
-    const res = await fetch("./route.json", { cache: "no-store" }); // CHANGE THIS LATER
+    const res = await fetch(`./${ROUTE_FILE}`, { cache: "no-store" }); // CHANGE THIS LATER
     if (!res.ok) throw new Error(`Failed to load route.json (${res.status})`);
     const data = await res.json();
 
@@ -1581,4 +1583,3 @@ function cityOnly(stop) {
         if (el) el.textContent = "Error (see console)";
     }
 })();
-
