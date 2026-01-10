@@ -9,7 +9,7 @@ const WEATHERAPI_KEY = "c8b1cc710316460e83f54057260101";
 const BASKET_START_DR = 77;
 const CITY_PANEL_MIN_DR = 77;
 
-const ROUTE_FILE = "route.json"
+const ROUTE_FILE = "route-testing.json"
 
 const TAKEOFF_DR = 76;
 
@@ -324,11 +324,13 @@ function cityOnly(stop) {
         }
 
         // CHANGE LATER IF YOU WANT PRE-START REDIRECT
+        /*
         const PRE_JOURNEY_START_UTC_MS = Date.UTC(2026, 3, 5, 6, 0, 0);
         if (Date.now() < PRE_JOURNEY_START_UTC_MS) {
             window.location.replace("index.html");
             return;
         }
+        */
 
         // Show initial "Loading..." if element exists
         const statDurationEl = $("statDuration");
@@ -373,11 +375,15 @@ function cityOnly(stop) {
                     "star-intensity": 0.6
                 });
             } else {
-                // Satellite: still apply globe fog, but no dusk preset
+                const SPACE = "rgb(5, 5, 12)";
+
                 map.setFog({
                     range: [0.8, 10],
-                    "space-color": "rgb(11, 11, 25)",
-                    "star-intensity": 0.3
+                    color: SPACE,
+                    "high-color": SPACE,
+                    "horizon-blend": 0,
+                    "space-color": SPACE,
+                    "star-intensity": 0.6
                 });
             }
         });
