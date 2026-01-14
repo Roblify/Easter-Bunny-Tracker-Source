@@ -9,7 +9,7 @@ const WEATHERAPI_KEY = "c8b1cc710316460e83f54057260101";
 const BASKET_START_DR = 77;
 const CITY_PANEL_MIN_DR = 77;
 
-const ROUTE_FILE = "data/route.json"
+const ROUTE_FILE = "data/route-testing.json"
 
 const TAKEOFF_DR = 76;
 const PRE_STATUS_MAX_DR = 75;
@@ -350,11 +350,13 @@ function deliveryEndTime(stop) {
         }
 
         // CHANGE LATER IF YOU WANT PRE-START REDIRECT
+        /*
         const PRE_JOURNEY_START_UTC_MS = Date.UTC(2026, 3, 5, 6, 0, 0);
         if (Date.now() < PRE_JOURNEY_START_UTC_MS) {
             window.location.replace("index.html");
             return;
         }
+        */
 
         // Show initial "Loading..." if element exists
         const statDurationEl = $("statDuration");
@@ -1141,6 +1143,24 @@ function deliveryEndTime(stop) {
             return false;
         }
 
+        function isBeforeDR76ForSegment(seg, stops) {
+            if (seg.mode === "pre") return true;
+
+            if (seg.mode === "travel") {
+                const to = stops[seg.to];
+                const dr = Number(to?.DR);
+                return Number.isFinite(dr) && dr < TAKEOFF_DR; // TAKEOFF_DR is 76
+            }
+
+            if (seg.mode === "stop") {
+                const s = stops[seg.i];
+                const dr = Number(s?.DR);
+                return Number.isFinite(dr) && dr < TAKEOFF_DR;
+            }
+
+            return false;
+        }
+
         // ETA override:
         // Before TAKEOFF_ARRIVAL (DR 76), statEta counts down to DR 76.
         // After that, statEta counts down to "next" like normal.
@@ -1694,8 +1714,8 @@ function deliveryEndTime(stop) {
                 return;
             }
 
-            const beforeTakeoff = Number.isFinite(TAKEOFF_ARRIVAL) && now < TAKEOFF_ARRIVAL;
-            setEtaLabel(beforeTakeoff);
+            const before76 = isBeforeDR76ForSegment(seg, stops);
+            setEtaLabel(before76);
 
             const before77 = isBeforeDR77ForSegment(seg, stops);
             setViewerEtaVisibility(!before77);
@@ -1728,10 +1748,32 @@ function deliveryEndTime(stop) {
                 const s = stops[seg.i];
                 const next = stops[Math.min(seg.i + 1, stops.length - 1)];
 
-                // ✅ ORIGINAL behavior: stopped = delivering
-                isDelivering = true;
+                const drNow = Number(s.DR);
+                const preTakeoffStop = Number.isFinite(drNow) && drNow < TAKEOFF_DR;
+
+                // If DR < 76, NEVER deliver (keeps Egg FX off too)
+                isDelivering = !preTakeoffStop;
 
                 updateBunnyPosition(s.Longitude, s.Latitude);
+
+                if (preTakeoffStop) {
+                    updateHUD({
+                        status: s.City || "Preparing…",
+                        lastText: "N/A",
+                        etaSeconds: etaForHUD(now, NaN),      // etaForHUD will return TAKEOFF_ARRIVAL-now while now<TAKEOFF_ARRIVAL
+                        stopRemainingSeconds: NaN,
+                        speedKmh: NaN,
+                        speedMph: NaN,
+                        eggs: 0,
+                        carrots: 0
+                    });
+
+                    followBunnyIfLocked();
+                    currentTravelDirection = null;
+                    updateViewerLocationEta(now);
+                    updateCityPanel(now, seg);
+                    return;
+                }
 
                 const stopRemaining = s.UnixArrivalDeparture - now;
 
@@ -1783,16 +1825,17 @@ function deliveryEndTime(stop) {
                 if (!from || !to) return;
 
                 const toDr = Number(to.DR);
+                const preTakeoffTravel = Number.isFinite(toDr) && toDr < TAKEOFF_DR;
 
                 const showRegionInStatus = Number.isFinite(toDr) && toDr >= 76;
                 const destinationLabelForStatus = showRegionInStatus
                     ? cityLabel(to)
                     : cityOnly(to);
 
-                const showHeadingPrefix = Number.isFinite(toDr) && toDr >= 76;
-                const statusText = showHeadingPrefix
-                    ? `Heading to: ${destinationLabelForStatus}`
-                    : destinationLabelForStatus;
+                // If DR < 76: just show label (no "Heading to:")
+                const statusText = preTakeoffTravel
+                    ? (to.City || "Preparing…")
+                    : `Heading to: ${destinationLabelForStatus}`;
 
                 const departT = from.UnixArrivalDeparture;
                 const arriveT = to.UnixArrivalArrival;
@@ -1803,11 +1846,16 @@ function deliveryEndTime(stop) {
                 updateBunnyPosition(pos.lon, pos.lat);
 
                 const distKm = haversineKm(from.Latitude, from.Longitude, to.Latitude, to.Longitude);
-                const speedKmh = (distKm / denom) * 3600;
-                const speedMph = speedKmh * 0.621371;
+                const speedKmh = preTakeoffTravel ? NaN : (distKm / denom) * 3600;
+                const speedMph = preTakeoffTravel ? NaN : (speedKmh * 0.621371);
 
-                const eggs = lerp(Number(from.EggsDelivered) || 0, Number(to.EggsDelivered) || 0, t);
-                const carrots = lerp(Number(from.CarrotsEaten) || 0, Number(to.CarrotsEaten) || 0, t);
+                const eggs = preTakeoffTravel
+                    ? 0
+                    : lerp(Number(from.EggsDelivered) || 0, Number(to.EggsDelivered) || 0, t);
+
+                const carrots = preTakeoffTravel
+                    ? 0
+                    : lerp(Number(from.CarrotsEaten) || 0, Number(to.CarrotsEaten) || 0, t); X
 
                 updateHUD({
                     status: statusText,
@@ -1838,5 +1886,4 @@ function deliveryEndTime(stop) {
         const el = document.getElementById("statStatus");
         if (el) el.textContent = "Error (see console)";
     }
-
 })();
