@@ -286,7 +286,7 @@ async function loadRoute() {
 
     stops = stops.map((s) => ({
         ...s,
-        DR: toNum(s.DR),
+        DR: parseDR(s.DR),
         Latitude: Number(s.Latitude),
         Longitude: Number(s.Longitude),
         EggsDelivered: toNum(s["Eggs Delivered"]),
@@ -318,6 +318,16 @@ function cityOnly(stop) {
 function safeNum(x) {
     const n = Number(x);
     return Number.isFinite(n) ? n : NaN;
+}
+
+function parseDR(v) {
+    // best case: already numeric-like
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+
+    // salvage from strings like "76 (TAKEOFF)" or "DR 76"
+    const m = String(v ?? "").match(/-?\d+/);
+    return m ? Number(m[0]) : NaN;
 }
 
 function deliveryStartTime(stop) {
@@ -1028,15 +1038,21 @@ function deliveryEndTime(stop) {
                 const a = Number(s.UnixArrival);
                 const d = Number(s.UnixArrivalDeparture);
 
-                // Prefer real delivery end if it exists and is after arrival
-                if (Number.isFinite(d) && Number.isFinite(a) && d > a) return d;
+                // normal preference order
+                let end =
+                    (Number.isFinite(d) ? d :
+                        (Number.isFinite(a) ? a : aA));
 
-                // If UnixArrivalDeparture doesn't make sense, but ArrivalArrival->Departure does, use that
-                if (Number.isFinite(d) && Number.isFinite(aA) && d > aA) return d;
+                // ✅ IMPORTANT: if this is DR 76 and it's effectively a 0-second stop,
+                // create a small "takeoff window" so segment math doesn't collapse.
+                const dr = Number(s.DR);
+                if (Number.isFinite(dr) && dr === TAKEOFF_DR && Number.isFinite(aA)) {
+                    if (!Number.isFinite(end) || end <= aA + 0.5) {
+                        end = aA + 8; // 8s window feels nice; change if you want
+                    }
+                }
 
-                // Otherwise fallback to arrival
-                if (Number.isFinite(a)) return a;
-                return aA;
+                return end;
             }
 
             // -----------------------------
@@ -1749,6 +1765,36 @@ function deliveryEndTime(stop) {
                 const next = stops[Math.min(seg.i + 1, stops.length - 1)];
 
                 const drNow = Number(s.DR);
+
+                if (Number.isFinite(drNow) && drNow === TAKEOFF_DR) {
+                    // Treat DR 76 as "taking off / first hop" instead of "delivering"
+                    isDelivering = false;
+
+                    // Keep bunny exactly on the takeoff point during the takeoff window
+                    updateBunnyPosition(s.Longitude, s.Latitude);
+
+                    // Count down to the first delivery hop (next stop) if it exists
+                    const nextA = next ? Number(next.UnixArrivalArrival) : NaN;
+                    const eta = (Number.isFinite(nextA)) ? (nextA - now) : NaN;
+
+                    updateHUD({
+                        status: "Takeoff clearance granted — lifting off!",
+                        lastText: "N/A",
+                        etaSeconds: eta,
+                        stopRemainingSeconds: NaN,
+                        speedKmh: NaN,
+                        speedMph: NaN,
+                        eggs: 0,
+                        carrots: 0
+                    });
+
+                    // Make the lock feel “real” at the moment of takeoff
+                    followBunnyIfLocked();
+                    currentTravelDirection = null;
+                    updateViewerLocationEta(now);
+                    updateCityPanel(now, seg);
+                    return;
+                }
                 const preTakeoffStop = Number.isFinite(drNow) && drNow < TAKEOFF_DR;
 
                 // If DR < 76, NEVER deliver (keeps Egg FX off too)
@@ -1855,7 +1901,7 @@ function deliveryEndTime(stop) {
 
                 const carrots = preTakeoffTravel
                     ? 0
-                    : lerp(Number(from.CarrotsEaten) || 0, Number(to.CarrotsEaten) || 0, t); X
+                    : lerp(Number(from.CarrotsEaten) || 0, Number(to.CarrotsEaten) || 0, t);
 
                 updateHUD({
                     status: statusText,
