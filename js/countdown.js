@@ -13,7 +13,7 @@
 
   function redirectToTracker() {
     // Use replace so back button doesn't bounce people back into the countdown
-    window.location.replace("tracker.html");
+    window.location.replace("https://easterbunnytracker.org/tracker");
   }
 
   function tick() {
@@ -108,4 +108,5 @@
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && helpOverlay.classList.contains("is-open")) closeHelp();
   });
+
 })();
